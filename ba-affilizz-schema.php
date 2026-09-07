@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.0.4
+ * Version: 1.1.0
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,9 +11,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.0.4' );
+define( 'BA_AFSC_VERSION', '1.1.0' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
+define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
 define( 'BA_AFSC_RENDER', 'https://render.api.affilizz.com/api/v1/render/' );
 
 /* =========================================================================
@@ -311,7 +312,13 @@ function ba_afsc_build( $post_id ) {
    ====================================================================== */
 
 function ba_afsc_generate( $post_id ) {
-	$schema = ba_afsc_build( $post_id );
+	// Le nombre de blocs est memorise : un article qui n'en porte aucun n'a
+	// pas besoin d'etre reexamine toutes les 24 h. Sur 4 500 articles dont
+	// un tiers seulement porte des blocs, c'est ce qui rend la file tenable.
+	$blocs = count( ba_afsc_content_ids( $post_id ) );
+	update_post_meta( $post_id, BA_AFSC_META_BLOCS, $blocs );
+
+	$schema = $blocs ? ba_afsc_build( $post_id ) : null;
 	update_post_meta( $post_id, BA_AFSC_META_DATE, time() );
 
 	if ( ! $schema ) {
@@ -356,23 +363,57 @@ add_filter( 'cron_schedules', function( $schedules ) {
 
 function ba_afsc_a_traiter( $limite ) {
 	$fraicheur = max( 1, (int) ba_afsc_opt( 'fraicheur', 24 ) ) * HOUR_IN_SECONDS;
+	$longue    = WEEK_IN_SECONDS; // articles sans bloc : une verification par semaine suffit
 	$types     = array_filter( array_map( 'trim', explode( ',', (string) ba_afsc_opt( 'types', 'post' ) ) ) );
+	$types     = $types ? $types : array( 'post' );
 
-	return get_posts( array(
-		'post_type'      => $types ? $types : array( 'post' ),
-		'post_status'    => 'publish',
-		'posts_per_page' => $limite,
-		'orderby'        => 'meta_value_num',
-		'meta_key'       => BA_AFSC_META_DATE,
-		'order'          => 'ASC',
-		'fields'         => 'ids',
-		// Les articles jamais traites passent en premier, puis les plus anciens.
-		'meta_query'     => array(
-			'relation' => 'OR',
-			array( 'key' => BA_AFSC_META_DATE, 'compare' => 'NOT EXISTS' ),
+	$base = array(
+		'post_type'        => $types,
+		'post_status'      => 'publish',
+		'fields'           => 'ids',
+		'orderby'          => 'meta_value_num',
+		'meta_key'         => BA_AFSC_META_DATE,
+		'order'            => 'ASC',
+		'suppress_filters' => true,
+	);
+
+	$ids = array();
+
+	// 1. Jamais examines. 2. Porteurs de blocs et perimes. 3. Sans bloc et
+	// perimes depuis longtemps. L'ordre garantit que la file utile passe
+	// avant le balayage de fond.
+	$passes = array(
+		array( array( 'key' => BA_AFSC_META_DATE, 'compare' => 'NOT EXISTS' ) ),
+		array(
+			'relation' => 'AND',
+			array( 'key' => BA_AFSC_META_BLOCS, 'value' => 0, 'compare' => '>', 'type' => 'NUMERIC' ),
 			array( 'key' => BA_AFSC_META_DATE, 'value' => time() - $fraicheur, 'compare' => '<', 'type' => 'NUMERIC' ),
 		),
-	) );
+		array(
+			'relation' => 'AND',
+			array( 'key' => BA_AFSC_META_BLOCS, 'value' => 0, 'compare' => '=', 'type' => 'NUMERIC' ),
+			array( 'key' => BA_AFSC_META_DATE, 'value' => time() - $longue, 'compare' => '<', 'type' => 'NUMERIC' ),
+		),
+	);
+
+	foreach ( $passes as $n => $meta_query ) {
+		$reste = $limite - count( $ids );
+		if ( $reste < 1 ) {
+			break;
+		}
+		$args = $base;
+		$args['posts_per_page'] = $reste;
+		$args['meta_query']     = $meta_query;
+		$args['post__not_in']   = $ids;
+		if ( 0 === $n ) {
+			// Sans date de generation, il n'y a rien a trier dessus.
+			$args['orderby'] = 'date';
+			unset( $args['meta_key'] );
+		}
+		$ids = array_merge( $ids, get_posts( $args ) );
+	}
+
+	return $ids;
 }
 
 function ba_afsc_traiter_lot() {
@@ -399,6 +440,41 @@ function ba_afsc_traiter_lot() {
 	), false );
 }
 add_action( 'ba_afsc_cron', 'ba_afsc_traiter_lot' );
+
+/* =========================================================================
+   DECLENCHEUR CRON SERVEUR
+   WP-Cron ne se declenche que sur une visite. Sur un hebergement ou il est
+   capricieux, une tache cron systeme appelle cette URL et le lot part
+   directement, sans dependre du trafic.
+   ====================================================================== */
+
+function ba_afsc_tick_key() {
+	$cle = get_option( 'ba_afsc_tick_key' );
+	if ( ! $cle ) {
+		$cle = wp_generate_password( 24, false, false );
+		update_option( 'ba_afsc_tick_key', $cle, false );
+	}
+	return $cle;
+}
+
+function ba_afsc_tick() {
+	$fournie = isset( $_GET['key'] ) ? sanitize_text_field( wp_unslash( $_GET['key'] ) ) : '';
+	// Comparaison a temps constant : la cle ne doit pas pouvoir etre devinee
+	// caractere par caractere en mesurant le temps de reponse.
+	if ( ! hash_equals( ba_afsc_tick_key(), $fournie ) ) {
+		status_header( 403 );
+		exit( 'cle invalide' );
+	}
+
+	ba_afsc_traiter_lot();
+
+	$der = get_option( 'ba_afsc_dernier_passage' );
+	status_header( 200 );
+	header( 'Content-Type: text/plain; charset=utf-8' );
+	exit( $der ? sprintf( "%d article(s) traites, %d avec produits\n", $der['traites'], $der['avec'] ) : "rien a faire\n" );
+}
+add_action( 'admin_post_nopriv_ba_afsc_tick', 'ba_afsc_tick' );
+add_action( 'admin_post_ba_afsc_tick', 'ba_afsc_tick' );
 
 // Un article modifie est regenere au prochain passage, pas pendant la sauvegarde.
 add_action( 'save_post', function( $post_id ) {
@@ -557,6 +633,10 @@ function ba_afsc_page() {
 				echo $der ? esc_html( sprintf( '%s — %d article(s), %d avec produits',
 					wp_date( 'j M Y H:i', $der['date'] ), $der['traites'], $der['avec'] ) ) : 'jamais';
 			?></td></tr>
+			<tr><td>File d'attente</td><td><?php
+				$file = count( ba_afsc_a_traiter( 500 ) );
+				echo esc_html( $file >= 500 ? '500 ou plus' : $file . ' article(s) en attente' );
+			?></td></tr>
 			<tr><td>Prochain passage</td><td><?php echo $suiv ? esc_html( wp_date( 'j M Y H:i', $suiv ) ) : 'non planifie'; ?></td></tr>
 		</table>
 
@@ -578,6 +658,11 @@ function ba_afsc_page() {
 				<tr><th>Fraicheur</th><td>
 					<input type="number" name="fraicheur" min="1" max="720" value="<?php echo (int) $s['fraicheur']; ?>" /> heures
 					<p class="description">Age au-dela duquel un article est regenere. Les prix bougent : 24 h est un bon compromis.</p>
+				</td></tr>
+				<tr><th>Declencheur cron serveur</th><td>
+					<input type="text" readonly onclick="this.select();" style="width:100%;font-family:monospace;font-size:12px;"
+						value='wget "<?php echo esc_url( admin_url( 'admin-post.php?action=ba_afsc_tick&key=' . ba_afsc_tick_key() ) ); ?>" -q -O /dev/null -t 1 -T 300' />
+					<p class="description">A coller dans une tache cron cPanel, toutes les heures. WP-Cron ne se declenche que sur une visite : sur cet hebergement, le declencheur direct est plus sur. Clic dans le champ = tout selectionner.</p>
 				</td></tr>
 				<tr><th>Types de contenu</th><td>
 					<input type="text" name="types" value="<?php echo esc_attr( $s['types'] ); ?>" class="regular-text" />
