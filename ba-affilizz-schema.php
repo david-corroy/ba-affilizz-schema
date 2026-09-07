@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,10 +11,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.2.0' );
+define( 'BA_AFSC_VERSION', '1.3.0' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
+define( 'BA_AFSC_META_VIDES', '_ba_afsc_vides' );
 define( 'BA_AFSC_RENDER', 'https://render.api.affilizz.com/api/v1/render/' );
 
 /* =========================================================================
@@ -131,8 +132,12 @@ function ba_afsc_fetch( $content_id, $page_url ) {
 	}
 
 	$code = wp_remote_retrieve_response_code( $reponse );
-	// 204 = le bloc ne renvoie plus rien. Ce n'est pas une erreur : c'est un
-	// contenu vide, exactement ce que signale l'endpoint /v1/contents.
+	// 204 = le bloc ne renvoie plus rien. Ce n'est pas une erreur mais un
+	// contenu vide : plus aucun produit n'a d'offre achetable. On le
+	// distingue, c'est cette information que voient les redacteurs.
+	if ( 204 === $code ) {
+		return 204;
+	}
 	if ( 200 !== $code ) {
 		return false;
 	}
@@ -265,8 +270,13 @@ function ba_afsc_build( $post_id ) {
 	$ancres   = ba_afsc_ancres( $post_id );
 	$produits = array();
 	$vus      = array();
+	$vides = 0;
 	foreach ( $ids as $content_id ) {
 		$data = ba_afsc_fetch( $content_id, $page_url );
+		if ( 204 === $data ) {
+			$vides++;
+			continue;
+		}
 		if ( ! $data ) {
 			continue;
 		}
@@ -284,6 +294,8 @@ function ba_afsc_build( $post_id ) {
 			$produits[]  = $produit;
 		}
 	}
+
+	update_post_meta( $post_id, BA_AFSC_META_VIDES, $vides );
 
 	if ( ! $produits ) {
 		return null;
@@ -318,6 +330,9 @@ function ba_afsc_generate( $post_id ) {
 	$blocs = count( ba_afsc_content_ids( $post_id ) );
 	update_post_meta( $post_id, BA_AFSC_META_BLOCS, $blocs );
 
+	if ( ! $blocs ) {
+		delete_post_meta( $post_id, BA_AFSC_META_VIDES );
+	}
 	$schema = $blocs ? ba_afsc_build( $post_id ) : null;
 	update_post_meta( $post_id, BA_AFSC_META_DATE, time() );
 
