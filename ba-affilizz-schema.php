@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.3.1
+ * Version: 1.4.0
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.3.1' );
+define( 'BA_AFSC_VERSION', '1.4.0' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -226,6 +226,14 @@ function ba_afsc_product( $carte, $page_url, $ancres = array() ) {
 		$offres[] = $offre;
 	}
 
+	// Un produit sans offre achetable n'est pas declare. Affilizz renvoie
+	// bien la fiche — le lecteur voit « Actuellement en rupture de stock » —
+	// mais annoncer a Google un produit d'un comparatif sans prix, sans
+	// marchand et sans disponibilite serait du balisage creux.
+	if ( ! $offres && ba_afsc_opt( 'in_stock_only', 1 ) ) {
+		return null;
+	}
+
 	if ( $offres ) {
 		$prix = wp_list_pluck( $offres, 'price' );
 		sort( $prix, SORT_NUMERIC );
@@ -281,17 +289,26 @@ function ba_afsc_build( $post_id ) {
 			continue;
 		}
 		$cartes = isset( $data['contents'] ) ? (array) $data['contents'] : array( $data );
+		$retenus = 0;
 		foreach ( $cartes as $carte ) {
 			$produit = ba_afsc_product( $carte, $page_url, $ancres );
 			if ( ! $produit ) {
 				continue;
 			}
+			$retenus++;
 			$cle = mb_strtolower( $produit['name'] );
 			if ( isset( $vus[ $cle ] ) ) {
 				continue;
 			}
 			$vus[ $cle ] = true;
 			$produits[]  = $produit;
+		}
+
+		// Le bloc s'affiche mais aucun de ses produits n'est achetable :
+		// pour le lecteur, l'encadre ne sert a rien. C'est ce que doit
+		// voir la redaction, pas seulement le cas du 204.
+		if ( 0 === $retenus ) {
+			$vides++;
 		}
 	}
 
