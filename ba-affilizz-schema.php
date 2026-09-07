@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.5.1
+ * Version: 1.5.2
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.5.1' );
+define( 'BA_AFSC_VERSION', '1.5.2' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -66,6 +66,13 @@ function ba_afsc_sources( $post_id ) {
 	$elementor = get_post_meta( $post_id, '_elementor_data', true );
 	if ( ! empty( $elementor ) ) {
 		$sources[] = is_string( $elementor ) ? $elementor : wp_json_encode( $elementor );
+	}
+
+	// Les identifiants des titres (#tcl-65c9k-la-meilleure-tv-tcl) sont poses
+	// par un filtre de contenu, pas stockes en base. Il faut donc la chaine
+	// complete pour les obtenir. Une fois par article et par generation.
+	if ( is_string( $contenu ) && false !== stripos( $contenu, 'affilizz' ) ) {
+		$sources[] = apply_filters( 'the_content', $contenu );
 	}
 
 	$cache[ $post_id ] = $sources;
@@ -227,9 +234,12 @@ function ba_afsc_product( $carte, $page_url, $ancres = array() ) {
 	if ( $images ) {
 		$produit['image'] = esc_url_raw( $images[0] );
 	}
-	$produit['url'] = $page_url;
-	if ( ! empty( $carte['title'] ) ) {
-		$produit['url'] .= ba_afsc_ancre( $carte['title'], $ancres );
+	// Google exige une url unique par element de carrousel. Repeter l'url de
+	// la page sur chaque produit est signale comme erreur critique : mieux
+	// vaut aucune url qu'une url dupliquee.
+	$ancre = ! empty( $carte['title'] ) ? ba_afsc_ancre( $carte['title'], $ancres ) : '';
+	if ( $ancre ) {
+		$produit['url'] = $page_url . $ancre;
 	}
 
 	// Une offre en rupture annoncee comme disponible fait rejeter la fiche
