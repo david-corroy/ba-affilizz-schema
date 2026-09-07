@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.0.0' );
+define( 'BA_AFSC_VERSION', '1.0.1' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_RENDER', 'https://render.api.affilizz.com/api/v1/render/' );
@@ -55,7 +55,10 @@ function ba_afsc_content_ids( $post_id ) {
 		if ( ! is_string( $source ) || '' === $source ) {
 			continue;
 		}
-		if ( preg_match_all( '/publication-content-id=\\\\?["\']([a-f0-9]{24})/i', $source, $m ) ) {
+		// Le HTML rendu porte publication-content-id="..." mais Gutenberg stocke
+		// ses attributs en JSON : "publicationContentId":"...". Elementor, lui,
+		// echappe les guillemets. Un seul motif couvre les trois formes.
+		if ( preg_match_all( '/publication[-_]?content[-_]?id["\'\\\\\\s:=]{1,8}([a-f0-9]{24})/i', $source, $m ) ) {
 			$ids = array_merge( $ids, $m[1] );
 		}
 	}
@@ -386,6 +389,32 @@ function ba_afsc_couverture() {
 	return array( 'avec' => $avec, 'vus' => $vus );
 }
 
+/**
+ * Quand aucun bloc n'est repere, extrait le contexte autour de « affilizz »
+ * dans le contenu et dans les metas Elementor. Sert a voir le format reel
+ * plutot qu'a le supposer.
+ */
+function ba_afsc_diagnostic( $post_id ) {
+	$sources = array(
+		'post_content'   => get_post_field( 'post_content', $post_id ),
+		'_elementor_data'=> get_post_meta( $post_id, '_elementor_data', true ),
+	);
+
+	foreach ( $sources as $nom => $source ) {
+		if ( ! is_string( $source ) || '' === $source ) {
+			continue;
+		}
+		$pos = stripos( $source, 'affilizz' );
+		if ( false === $pos ) {
+			continue;
+		}
+		$extrait = substr( $source, max( 0, $pos - 60 ), 220 );
+		return sprintf( 'Diagnostic — trouve dans %s : %s', $nom, $extrait );
+	}
+
+	return 'Diagnostic — le mot « affilizz » n\'apparait ni dans post_content ni dans _elementor_data. Le bloc vient peut-etre d\'un shortcode, d\'un champ personnalise, ou du theme.';
+}
+
 add_action( 'admin_menu', function() {
 	add_menu_page( 'BA Affilizz Schema', 'BA Affilizz', 'manage_options', 'ba-afsc', 'ba_afsc_page', 'dashicons-tag', 81 );
 } );
@@ -416,6 +445,11 @@ function ba_afsc_page() {
 				'Article %d : %d bloc(s) Affilizz reperes, balisage %s.',
 				$id, $blocs, $ok ? 'genere' : 'vide (aucun produit renvoye)'
 			);
+			// Aucun bloc trouve : plutot que de laisser deviner, on montre ce
+			// que le contenu contient reellement autour du mot « affilizz ».
+			if ( 0 === $blocs ) {
+				$avis[] = ba_afsc_diagnostic( $id );
+			}
 		} else {
 			$avis[] = 'Identifiant d\'article inconnu.';
 		}
