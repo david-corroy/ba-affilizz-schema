@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.5.2
+ * Version: 1.5.3
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.5.2' );
+define( 'BA_AFSC_VERSION', '1.5.3' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -558,9 +558,10 @@ function ba_afsc_traiter_lot() {
 		return;
 	}
 
-	$lot = max( 1, min( 100, (int) ba_afsc_opt( 'lot', 20 ) ) );
-	$ids = ba_afsc_a_traiter( $lot );
-	$ok  = 0;
+	$depart = microtime( true );
+	$lot    = max( 1, min( 100, (int) ba_afsc_opt( 'lot', 20 ) ) );
+	$ids    = ba_afsc_a_traiter( $lot );
+	$ok     = 0;
 
 	foreach ( $ids as $post_id ) {
 		if ( ba_afsc_generate( $post_id ) ) {
@@ -570,10 +571,14 @@ function ba_afsc_traiter_lot() {
 		usleep( 300000 );
 	}
 
+	// La duree est enregistree pour que le ralentissement se constate au lieu
+	// de se deviner : la generation applique toute la chaine de filtres de
+	// contenu, ce qui depend des autres extensions installees.
 	update_option( 'ba_afsc_dernier_passage', array(
 		'date'    => time(),
 		'traites' => count( $ids ),
 		'avec'    => $ok,
+		'duree'   => round( microtime( true ) - $depart, 1 ),
 	), false );
 }
 add_action( 'ba_afsc_cron', 'ba_afsc_traiter_lot' );
@@ -788,8 +793,22 @@ function ba_afsc_page() {
 					(int) $cov['avec'], (int) $cov['candidats'], (int) $pct );
 			?></td></tr>
 			<tr><td>Dernier passage du cron</td><td><?php
-				echo $der ? esc_html( sprintf( '%s — %d article(s), %d avec produits',
-					wp_date( 'j M Y H:i', $der['date'] ), $der['traites'], $der['avec'] ) ) : 'jamais';
+				if ( ! $der ) {
+					echo 'jamais';
+				} else {
+					$d = isset( $der['duree'] ) ? (float) $der['duree'] : 0;
+					echo esc_html( sprintf( '%s — %d article(s), %d avec produits',
+						wp_date( 'j M Y H:i', $der['date'] ), $der['traites'], $der['avec'] ) );
+					if ( $d > 0 ) {
+						printf( ' &nbsp;<span style="color:%s">en %s s, soit %.1f s par article</span>',
+							$d > 240 ? '#a32218' : '#666',
+							esc_html( (string) $d ),
+							$der['traites'] ? $d / $der['traites'] : 0 );
+					}
+					if ( $d > 240 ) {
+						echo '<br /><span style="color:#a32218">Au-dela de 240 s, le lot approche du delai de wget : reduisez « articles par passage ».</span>';
+					}
+				}
 			?></td></tr>
 			<tr><td>Articles avec bloc Affilizz</td><td><?php
 				$rep = get_option( 'ba_afsc_repere' );
