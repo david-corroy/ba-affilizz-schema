@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.3.0
+ * Version: 1.3.1
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.3.0' );
+define( 'BA_AFSC_VERSION', '1.3.1' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -565,17 +565,29 @@ register_deactivation_hook( __FILE__, function() {
    ADMINISTRATION
    ====================================================================== */
 
+/**
+ * Progression rapportee aux seuls articles qui portent des blocs. Compter
+ * « 275 sur 3438 examines » melangeait les guides et les breves marquees par
+ * le reperage : le chiffre n'avancait pas visiblement.
+ */
 function ba_afsc_couverture() {
 	global $wpdb;
+
 	$avec = (int) $wpdb->get_var( $wpdb->prepare(
 		"SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value <> ''",
 		BA_AFSC_META
 	) );
-	$vus = (int) $wpdb->get_var( $wpdb->prepare(
-		"SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s",
-		BA_AFSC_META_DATE
+	// Candidats : ceux qui restent a -1 plus ceux dont le compte est connu.
+	$candidats = (int) $wpdb->get_var( $wpdb->prepare(
+		"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value <> '0'",
+		BA_AFSC_META_BLOCS
 	) );
-	return array( 'avec' => $avec, 'vus' => $vus );
+	$restants = (int) $wpdb->get_var( $wpdb->prepare(
+		"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = '-1'",
+		BA_AFSC_META_BLOCS
+	) );
+
+	return array( 'avec' => $avec, 'candidats' => $candidats, 'restants' => $restants );
 }
 
 /**
@@ -696,7 +708,11 @@ function ba_afsc_page() {
 
 		<h2>Etat</h2>
 		<table class="widefat striped" style="max-width:640px">
-			<tr><td>Articles avec balisage</td><td><strong><?php echo (int) $cov['avec']; ?></strong> sur <?php echo (int) $cov['vus']; ?> examines</td></tr>
+			<tr><td>Guides avec balisage</td><td><?php
+				$pct = $cov['candidats'] ? round( 100 * $cov['avec'] / $cov['candidats'] ) : 0;
+				printf( '<strong>%d</strong> sur %d guides &nbsp;<span style="color:#666">(%d %%)</span>',
+					(int) $cov['avec'], (int) $cov['candidats'], (int) $pct );
+			?></td></tr>
 			<tr><td>Dernier passage du cron</td><td><?php
 				echo $der ? esc_html( sprintf( '%s — %d article(s), %d avec produits',
 					wp_date( 'j M Y H:i', $der['date'] ), $der['traites'], $der['avec'] ) ) : 'jamais';
@@ -705,9 +721,12 @@ function ba_afsc_page() {
 				$rep = get_option( 'ba_afsc_repere' );
 				echo $rep ? esc_html( sprintf( '%d reperes le %s', $rep['candidats'], wp_date( 'j M H:i', $rep['date'] ) ) ) : 'reperage jamais lance';
 			?></td></tr>
-			<tr><td>File d'attente</td><td><?php
-				$file = count( ba_afsc_a_traiter( 500 ) );
-				echo esc_html( $file >= 500 ? '500 ou plus' : $file . ' article(s) en attente' );
+			<tr><td>Guides restant a examiner</td><td><?php
+				$lot = max( 1, (int) $s['lot'] );
+				printf( '%d &nbsp;<span style="color:#666">(~%s au rythme actuel)</span>',
+					(int) $cov['restants'],
+					esc_html( $cov['restants'] ? ceil( $cov['restants'] / $lot ) . ' passage(s)' : 'termine' )
+				);
 			?></td></tr>
 			<tr><td>Prochain passage</td><td><?php echo $suiv ? esc_html( wp_date( 'j M Y H:i', $suiv ) ) : 'non planifie'; ?></td></tr>
 		</table>
