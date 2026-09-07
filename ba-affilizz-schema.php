@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.0.1' );
+define( 'BA_AFSC_VERSION', '1.0.2' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_RENDER', 'https://render.api.affilizz.com/api/v1/render/' );
@@ -43,7 +43,16 @@ function ba_afsc_opt( $nom, $defaut = 0 ) {
    ====================================================================== */
 
 function ba_afsc_content_ids( $post_id ) {
-	$sources = array( get_post_field( 'post_content', $post_id ) );
+	$contenu = get_post_field( 'post_content', $post_id );
+	$sources = array( $contenu );
+
+	// Le bloc Gutenberg ne stocke qu'un code court — [affilizz-publication
+	// id="uoz4yrtw8"] — et c'est le shortcode d'Affilizz qui le resout en
+	// identifiant 24-hex au rendu. On execute donc le shortcode plutot que
+	// de rechercher une correspondance que seul leur serveur connait.
+	if ( is_string( $contenu ) && false !== stripos( $contenu, 'affilizz' ) ) {
+		$sources[] = do_shortcode( $contenu );
+	}
 
 	$elementor = get_post_meta( $post_id, '_elementor_data', true );
 	if ( ! empty( $elementor ) ) {
@@ -395,21 +404,27 @@ function ba_afsc_couverture() {
  * plutot qu'a le supposer.
  */
 function ba_afsc_diagnostic( $post_id ) {
+	$contenu = get_post_field( 'post_content', $post_id );
 	$sources = array(
-		'post_content'   => get_post_field( 'post_content', $post_id ),
-		'_elementor_data'=> get_post_meta( $post_id, '_elementor_data', true ),
+		'post_content'          => $contenu,
+		'shortcode execute'     => is_string( $contenu ) ? do_shortcode( $contenu ) : '',
+		'_elementor_data'       => get_post_meta( $post_id, '_elementor_data', true ),
 	);
 
 	foreach ( $sources as $nom => $source ) {
 		if ( ! is_string( $source ) || '' === $source ) {
 			continue;
 		}
-		$pos = stripos( $source, 'affilizz' );
+		// On cherche d'abord l'attribut resolu, plus parlant que le mot seul.
+		$pos = stripos( $source, 'publication-content-id' );
+		if ( false === $pos ) {
+			$pos = stripos( $source, 'affilizz' );
+		}
 		if ( false === $pos ) {
 			continue;
 		}
 		$extrait = substr( $source, max( 0, $pos - 60 ), 220 );
-		return sprintf( 'Diagnostic — trouve dans %s : %s', $nom, $extrait );
+		return sprintf( 'Diagnostic — %s : %s', $nom, $extrait );
 	}
 
 	return 'Diagnostic — le mot « affilizz » n\'apparait ni dans post_content ni dans _elementor_data. Le bloc vient peut-etre d\'un shortcode, d\'un champ personnalise, ou du theme.';
