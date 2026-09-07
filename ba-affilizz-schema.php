@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.1.0' );
+define( 'BA_AFSC_VERSION', '1.2.0' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -361,6 +361,52 @@ add_filter( 'cron_schedules', function( $schedules ) {
 	return $schedules;
 } );
 
+/**
+ * Marque en une passe les articles susceptibles de porter un bloc. Sans ca,
+ * la file part par date et broute des milliers de breves avant d'atteindre
+ * un comparatif : constate en production, 20 articles traites, 0 avec
+ * produits.
+ *
+ * -1 = candidat jamais examine, 0 = aucun bloc, >0 = nombre de blocs.
+ */
+function ba_afsc_reperer() {
+	global $wpdb;
+
+	$types = array_filter( array_map( 'trim', explode( ',', (string) ba_afsc_opt( 'types', 'post' ) ) ) );
+	$types = $types ? $types : array( 'post' );
+	$in    = implode( ',', array_fill( 0, count( $types ), '%s' ) );
+	$like  = '%' . $wpdb->esc_like( 'affilizz' ) . '%';
+
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->postmeta} WHERE meta_key = %s", BA_AFSC_META_BLOCS ) );
+
+	// Candidats : le contenu mentionne affilizz. Marques -1, donc en tete de file.
+	$candidats = $wpdb->query( $wpdb->prepare(
+		"INSERT INTO {$wpdb->postmeta} (post_id, meta_key, meta_value)
+		 SELECT ID, %s, '-1' FROM {$wpdb->posts}
+		 WHERE post_status = 'publish' AND post_type IN ($in) AND post_content LIKE %s",
+		array_merge( array( BA_AFSC_META_BLOCS ), $types, array( $like ) )
+	) );
+
+	// Les autres sont marques a 0 et horodates : ils tombent directement dans
+	// le balayage hebdomadaire au lieu d'encombrer la file utile.
+	$wpdb->query( $wpdb->prepare(
+		"INSERT INTO {$wpdb->postmeta} (post_id, meta_key, meta_value)
+		 SELECT ID, %s, '0' FROM {$wpdb->posts}
+		 WHERE post_status = 'publish' AND post_type IN ($in) AND post_content NOT LIKE %s",
+		array_merge( array( BA_AFSC_META_BLOCS ), $types, array( $like ) )
+	) );
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->postmeta} WHERE meta_key = %s", BA_AFSC_META_DATE ) );
+	$wpdb->query( $wpdb->prepare(
+		"INSERT INTO {$wpdb->postmeta} (post_id, meta_key, meta_value)
+		 SELECT post_id, %s, %s FROM {$wpdb->postmeta}
+		 WHERE meta_key = %s AND meta_value = '0'",
+		BA_AFSC_META_DATE, (string) time(), BA_AFSC_META_BLOCS
+	) );
+
+	update_option( 'ba_afsc_repere', array( 'date' => time(), 'candidats' => (int) $candidats ), false );
+	return (int) $candidats;
+}
+
 function ba_afsc_a_traiter( $limite ) {
 	$fraicheur = max( 1, (int) ba_afsc_opt( 'fraicheur', 24 ) ) * HOUR_IN_SECONDS;
 	$longue    = WEEK_IN_SECONDS; // articles sans bloc : une verification par semaine suffit
@@ -383,6 +429,8 @@ function ba_afsc_a_traiter( $limite ) {
 	// perimes depuis longtemps. L'ordre garantit que la file utile passe
 	// avant le balayage de fond.
 	$passes = array(
+		// Candidats reperes, jamais examines.
+		array( array( 'key' => BA_AFSC_META_BLOCS, 'value' => -1, 'compare' => '=', 'type' => 'NUMERIC' ) ),
 		array( array( 'key' => BA_AFSC_META_DATE, 'compare' => 'NOT EXISTS' ) ),
 		array(
 			'relation' => 'AND',
@@ -405,7 +453,7 @@ function ba_afsc_a_traiter( $limite ) {
 		$args['posts_per_page'] = $reste;
 		$args['meta_query']     = $meta_query;
 		$args['post__not_in']   = $ids;
-		if ( 0 === $n ) {
+		if ( $n <= 1 ) {
 			// Sans date de generation, il n'y a rien a trier dessus.
 			$args['orderby'] = 'date';
 			unset( $args['meta_key'] );
@@ -593,6 +641,11 @@ function ba_afsc_page() {
 		}
 	}
 
+	if ( isset( $_POST['ba_afsc_reperer'] ) && check_admin_referer( 'ba_afsc_admin' ) ) {
+		$n = ba_afsc_reperer();
+		$avis[] = sprintf( '%d article(s) contiennent un bloc Affilizz. Ils passent en tete de file ; les autres basculent en balayage hebdomadaire.', $n );
+	}
+
 	if ( isset( $_POST['ba_afsc_purge'] ) && check_admin_referer( 'ba_afsc_admin' ) ) {
 		global $wpdb;
 		$wpdb->delete( $wpdb->postmeta, array( 'meta_key' => BA_AFSC_META ) );
@@ -632,6 +685,10 @@ function ba_afsc_page() {
 			<tr><td>Dernier passage du cron</td><td><?php
 				echo $der ? esc_html( sprintf( '%s — %d article(s), %d avec produits',
 					wp_date( 'j M Y H:i', $der['date'] ), $der['traites'], $der['avec'] ) ) : 'jamais';
+			?></td></tr>
+			<tr><td>Articles avec bloc Affilizz</td><td><?php
+				$rep = get_option( 'ba_afsc_repere' );
+				echo $rep ? esc_html( sprintf( '%d reperes le %s', $rep['candidats'], wp_date( 'j M H:i', $rep['date'] ) ) ) : 'reperage jamais lance';
 			?></td></tr>
 			<tr><td>File d'attente</td><td><?php
 				$file = count( ba_afsc_a_traiter( 500 ) );
@@ -678,7 +735,11 @@ function ba_afsc_page() {
 			</p>
 			<p class="description">Genere le balisage immediatement et affiche le nombre de blocs trouves. Utile pour verifier avant d'activer.</p>
 
-			<h2>Purger</h2>
+			<h2>Reperer les articles concernes</h2>
+			<p><button class="button button-primary" name="ba_afsc_reperer" value="1">Reperer maintenant</button></p>
+			<p class="description">Une requete marque les articles dont le contenu mentionne Affilizz et les place en tete de file. Les autres passent en balayage hebdomadaire. A lancer une fois apres l'installation, puis apres toute purge.</p>
+
+		<h2>Purger</h2>
 			<p><button class="button" name="ba_afsc_purge" value="1" onclick="return confirm('Supprimer tout le balisage stocke ? Le cron le regenerera par lots.');">Tout supprimer et regenerer</button></p>
 		</form>
 	</div>
