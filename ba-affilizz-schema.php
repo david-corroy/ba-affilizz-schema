@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.0.3
+ * Version: 1.0.4
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.0.3' );
+define( 'BA_AFSC_VERSION', '1.0.4' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_RENDER', 'https://render.api.affilizz.com/api/v1/render/' );
@@ -42,14 +42,21 @@ function ba_afsc_opt( $nom, $defaut = 0 ) {
    deux formes plutot que de supposer laquelle est utilisee.
    ====================================================================== */
 
-function ba_afsc_content_ids( $post_id ) {
+/**
+ * Les trois endroits ou un identifiant peut se trouver. Le shortcode est
+ * execute parce que le bloc Gutenberg ne stocke qu'un code court —
+ * [affilizz-publication id="uoz4yrtw8"] — et que la resolution vers
+ * l'identifiant 24-hex n'existe que cote serveur d'Affilizz.
+ */
+function ba_afsc_sources( $post_id ) {
+	static $cache = array();
+	if ( isset( $cache[ $post_id ] ) ) {
+		return $cache[ $post_id ];
+	}
+
 	$contenu = get_post_field( 'post_content', $post_id );
 	$sources = array( $contenu );
 
-	// Le bloc Gutenberg ne stocke qu'un code court — [affilizz-publication
-	// id="uoz4yrtw8"] — et c'est le shortcode d'Affilizz qui le resout en
-	// identifiant 24-hex au rendu. On execute donc le shortcode plutot que
-	// de rechercher une correspondance que seul leur serveur connait.
 	if ( is_string( $contenu ) && false !== stripos( $contenu, 'affilizz' ) ) {
 		$sources[] = do_shortcode( $contenu );
 	}
@@ -58,6 +65,28 @@ function ba_afsc_content_ids( $post_id ) {
 	if ( ! empty( $elementor ) ) {
 		$sources[] = is_string( $elementor ) ? $elementor : wp_json_encode( $elementor );
 	}
+
+	$cache[ $post_id ] = $sources;
+	return $sources;
+}
+
+/**
+ * Ancres reelles des titres de la page. Un titre s'appelle
+ * « TCL 65C9K, la meilleure TV TCL » et son id vaut donc
+ * tcl-65c9k-la-meilleure-tv-tcl : le nom du produit n'en est que le debut.
+ */
+function ba_afsc_ancres( $post_id ) {
+	$ids = array();
+	foreach ( ba_afsc_sources( $post_id ) as $source ) {
+		if ( is_string( $source ) && preg_match_all( '/<h[1-6][^>]*\\sid=["\']([^"\']+)["\']/i', $source, $m ) ) {
+			$ids = array_merge( $ids, $m[1] );
+		}
+	}
+	return array_values( array_unique( $ids ) );
+}
+
+function ba_afsc_content_ids( $post_id ) {
+	$sources = ba_afsc_sources( $post_id );
 
 	$ids = array();
 	foreach ( $sources as $source ) {
@@ -132,12 +161,22 @@ function ba_afsc_notes( $points ) {
 	return $liste ? array( '@type' => 'ItemList', 'itemListElement' => $liste ) : null;
 }
 
-function ba_afsc_ancre( $titre ) {
+// Retient le titre reel qui commence par le nom du produit. Aucune
+// correspondance : pas d'ancre du tout plutot qu'une ancre inventee.
+function ba_afsc_ancre( $titre, $ancres ) {
 	$slug = sanitize_title( $titre );
-	return $slug ? '#' . $slug : '';
+	if ( ! $slug ) {
+		return '';
+	}
+	foreach ( $ancres as $id ) {
+		if ( 0 === strpos( $id, $slug ) ) {
+			return '#' . $id;
+		}
+	}
+	return '';
 }
 
-function ba_afsc_product( $carte, $page_url ) {
+function ba_afsc_product( $carte, $page_url, $ancres = array() ) {
 	$nom = $carte['productName'] ?? ( $carte['title'] ?? '' );
 	if ( '' === trim( (string) $nom ) ) {
 		return null;
@@ -148,8 +187,9 @@ function ba_afsc_product( $carte, $page_url ) {
 	if ( ! empty( $carte['productImage'] ) ) {
 		$produit['image'] = esc_url_raw( $carte['productImage'] );
 	}
+	$produit['url'] = $page_url;
 	if ( ! empty( $carte['title'] ) ) {
-		$produit['url'] = $page_url . ba_afsc_ancre( $carte['title'] );
+		$produit['url'] .= ba_afsc_ancre( $carte['title'], $ancres );
 	}
 
 	// Une offre en rupture annoncee comme disponible fait rejeter la fiche
@@ -221,6 +261,7 @@ function ba_afsc_build( $post_id ) {
 		return null;
 	}
 
+	$ancres   = ba_afsc_ancres( $post_id );
 	$produits = array();
 	$vus      = array();
 	foreach ( $ids as $content_id ) {
@@ -230,7 +271,7 @@ function ba_afsc_build( $post_id ) {
 		}
 		$cartes = isset( $data['contents'] ) ? (array) $data['contents'] : array( $data );
 		foreach ( $cartes as $carte ) {
-			$produit = ba_afsc_product( $carte, $page_url );
+			$produit = ba_afsc_product( $carte, $page_url, $ancres );
 			if ( ! $produit ) {
 				continue;
 			}
