@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.4.0
+ * Version: 1.4.1
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.4.0' );
+define( 'BA_AFSC_VERSION', '1.4.1' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -359,7 +359,12 @@ function ba_afsc_generate( $post_id ) {
 	}
 
 	$json = wp_json_encode( $schema, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
-	update_post_meta( $post_id, BA_AFSC_META, $json );
+
+	// wp_slash() est indispensable : update_post_meta() applique wp_unslash()
+	// sur la valeur, ce qui mangeait l'antislash des guillemets echappes du
+	// JSON. Un nom de produit contenant un pouce — « ecran 6,67" » — suffisait
+	// a produire un JSON-LD casse, servi tel quel dans la page.
+	update_post_meta( $post_id, BA_AFSC_META, wp_slash( $json ) );
 	return true;
 }
 
@@ -375,6 +380,11 @@ add_action( 'wp_head', function() {
 	}
 	$json = get_post_meta( get_the_ID(), BA_AFSC_META, true );
 	if ( empty( $json ) ) {
+		return;
+	}
+	// Filet de securite : mieux vaut aucun balisage qu'un balisage casse,
+	// que Google rejetterait sans rien dire.
+	if ( null === json_decode( $json, true ) ) {
 		return;
 	}
 	// Le JSON vient de wp_json_encode : la seule sequence a neutraliser est
