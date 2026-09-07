@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.0.2' );
+define( 'BA_AFSC_VERSION', '1.0.3' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_RENDER', 'https://render.api.affilizz.com/api/v1/render/' );
@@ -438,7 +438,8 @@ function ba_afsc_page() {
 	if ( ! current_user_can( 'manage_options' ) ) {
 		return;
 	}
-	$avis = array();
+	$avis   = array();
+	$apercu = '';
 
 	if ( isset( $_POST['ba_afsc_save'] ) && check_admin_referer( 'ba_afsc_admin' ) ) {
 		$s = ba_afsc_settings();
@@ -464,6 +465,11 @@ function ba_afsc_page() {
 			// que le contenu contient reellement autour du mot « affilizz ».
 			if ( 0 === $blocs ) {
 				$avis[] = ba_afsc_diagnostic( $id );
+			}
+			// Le balisage doit etre verifiable avant d'etre publie : sans ca,
+			// « testez puis activez » demande de verifier l'invisible.
+			if ( $ok ) {
+				$apercu = get_post_meta( $id, BA_AFSC_META, true );
 			}
 		} else {
 			$avis[] = 'Identifiant d\'article inconnu.';
@@ -491,6 +497,16 @@ function ba_afsc_page() {
 
 		<?php if ( empty( $s['actif'] ) ) : ?>
 			<div class="notice notice-warning"><p><strong>Inactif.</strong> Le balisage n'est pas envoye dans les pages. Testez un article ci-dessous, verifiez-le dans le testeur de resultats enrichis de Google, puis activez.</p></div>
+		<?php endif; ?>
+
+		<?php if ( $apercu ) : ?>
+			<h2>Balisage genere</h2>
+			<p>Copiez ce JSON-LD dans l'onglet <strong>Code</strong> du
+				<a href="https://search.google.com/test/rich-results" target="_blank" rel="noopener">testeur de resultats enrichis</a>
+				avant d'activer. Clic dans le champ = tout selectionner.</p>
+			<textarea readonly onclick="this.select();" style="width:100%;height:260px;font-family:monospace;font-size:12px;white-space:pre;"><?php
+				echo esc_textarea( wp_json_encode( json_decode( $apercu, true ), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+			?></textarea>
 		<?php endif; ?>
 
 		<h2>Etat</h2>
