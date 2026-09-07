@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.5.0
+ * Version: 1.5.1
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.5.0' );
+define( 'BA_AFSC_VERSION', '1.5.1' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -154,7 +154,9 @@ function ba_afsc_fetch( $content_id, $page_url ) {
 function ba_afsc_notes( $points ) {
 	$liste = array();
 	foreach ( $points as $n => $point ) {
-		$texte = trim( wp_strip_all_tags( (string) $point ) );
+		$texte = (string) $point;
+		$texte = html_entity_decode( preg_replace( '/&#(\\d{2,4})(?!;)/', '&#$1;', $texte ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		$texte = trim( wp_strip_all_tags( $texte ) );
 		if ( '' === $texte ) {
 			continue;
 		}
@@ -215,7 +217,11 @@ function ba_afsc_product( $carte, $page_url, $ancres = array() ) {
 		return null;
 	}
 
-	$produit = array( '@type' => 'Product', 'name' => trim( $nom ) );
+	// Affilizz renvoie parfois des entites HTML, parfois mal formees
+	// (« Pro&#43 5G »). On les decode avant de les figer dans le balisage.
+	$nom = trim( html_entity_decode( preg_replace( '/&#(\\d{2,4})(?!;)/', '&#$1;', $nom ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
+
+	$produit = array( '@type' => 'Product', 'name' => $nom );
 
 	$images = ba_afsc_collecter( $carte, 'productImage' );
 	if ( $images ) {
