@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BA Affilizz Schema
  * Description: Genere le JSON-LD ItemList / Product / AggregateOffer des blocs Affilizz, a partir de l'endpoint de rendu public — la source meme dont le widget se sert, donc un balisage qui decrit toujours ce que le lecteur voit. Generation par cron, stockage en post_meta, aucun appel reseau au rendu de la page. Aucune cle API requise.
- * Version: 1.4.1
+ * Version: 1.5.0
  * Author: Buzzarena
  * License: GPL-2.0-or-later
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BA_AFSC_VERSION', '1.4.1' );
+define( 'BA_AFSC_VERSION', '1.5.0' );
 define( 'BA_AFSC_META', '_ba_afsc_jsonld' );
 define( 'BA_AFSC_META_DATE', '_ba_afsc_generated' );
 define( 'BA_AFSC_META_BLOCS', '_ba_afsc_blocs' );
@@ -182,16 +182,44 @@ function ba_afsc_ancre( $titre, $ancres ) {
 	return '';
 }
 
+/**
+ * Les offres ne sont pas toujours au meme endroit selon le type de bloc :
+ * un CAROUSEL expose contents[].offers[], un BOX n'a pas de contents et range
+ * les siennes sous tabs[].offers[]. Plutot que d'enumerer des types dont on ne
+ * connait pas la liste complete, on parcourt la fiche et on ramasse toute
+ * cle « offers » rencontree.
+ */
+function ba_afsc_collecter( $noeud, $cle, $profondeur = 0 ) {
+	if ( $profondeur > 4 || ! is_array( $noeud ) ) {
+		return array();
+	}
+	$trouve = array();
+	foreach ( $noeud as $k => $v ) {
+		if ( $k === $cle ) {
+			if ( is_array( $v ) && isset( $v[0] ) ) {
+				$trouve = array_merge( $trouve, $v );
+			} elseif ( '' !== $v && null !== $v && ! is_array( $v ) ) {
+				$trouve[] = $v;
+			}
+		} elseif ( is_array( $v ) ) {
+			$trouve = array_merge( $trouve, ba_afsc_collecter( $v, $cle, $profondeur + 1 ) );
+		}
+	}
+	return $trouve;
+}
+
 function ba_afsc_product( $carte, $page_url, $ancres = array() ) {
-	$nom = $carte['productName'] ?? ( $carte['title'] ?? '' );
+	$noms = ba_afsc_collecter( $carte, 'productName' );
+	$nom  = $noms ? $noms[0] : ( $carte['title'] ?? '' );
 	if ( '' === trim( (string) $nom ) ) {
 		return null;
 	}
 
 	$produit = array( '@type' => 'Product', 'name' => trim( $nom ) );
 
-	if ( ! empty( $carte['productImage'] ) ) {
-		$produit['image'] = esc_url_raw( $carte['productImage'] );
+	$images = ba_afsc_collecter( $carte, 'productImage' );
+	if ( $images ) {
+		$produit['image'] = esc_url_raw( $images[0] );
 	}
 	$produit['url'] = $page_url;
 	if ( ! empty( $carte['title'] ) ) {
@@ -201,7 +229,10 @@ function ba_afsc_product( $carte, $page_url, $ancres = array() ) {
 	// Une offre en rupture annoncee comme disponible fait rejeter la fiche
 	// entiere : on ne garde que ce qui est reellement achetable.
 	$offres = array();
-	foreach ( (array) ( $carte['offers'] ?? array() ) as $o ) {
+	foreach ( ba_afsc_collecter( $carte, 'offers' ) as $o ) {
+		if ( ! is_array( $o ) ) {
+			continue;
+		}
 		if ( ba_afsc_opt( 'in_stock_only', 1 ) && empty( $o['stock'] ) ) {
 			continue;
 		}
@@ -248,8 +279,8 @@ function ba_afsc_product( $carte, $page_url, $ancres = array() ) {
 		);
 	}
 
-	$plus  = ba_afsc_notes( (array) ( $carte['positivePoints'] ?? array() ) );
-	$moins = ba_afsc_notes( (array) ( $carte['negativePoints'] ?? array() ) );
+	$plus  = ba_afsc_notes( ba_afsc_collecter( $carte, 'positivePoints' ) );
+	$moins = ba_afsc_notes( ba_afsc_collecter( $carte, 'negativePoints' ) );
 	if ( $plus ) {
 		$produit['positiveNotes'] = $plus;
 	}
